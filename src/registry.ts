@@ -32,6 +32,15 @@ interface Manifest {
   }[]
 }
 
+interface Blob {
+  architecture: string
+  os: string
+  variant: string
+  rootfs: {
+    diff_ids: string[]
+  }
+}
+
 interface FetchResult {
   headers: Record<string, string>
   data: Manifest
@@ -80,6 +89,26 @@ export abstract class ContainerRegistry {
     const layers = fetchResult.data.layers as unknown as {digest: string}[]
 
     return layers.map((layer) => layer.digest)
+  }
+
+  protected async fetchBlob(digest: string, repo: string, token: string): Promise<Blob> {
+    const url = `https://${this.baseUrl}${repo}/blobs/${digest}`
+    const headers = {
+        Accept: 'application/vnd.docker.container.image.v1+json,application/vnd.oci.image.config.v1+json',
+        Authorization: `Bearer ${token}`,
+      }
+    const fetchResult = await this.fetch(url, headers)
+
+    const manifest = fetchResult.data as unknown as {
+        architecture: string
+        os: string
+        variant: string
+        rootfs: {
+          diff_ids: string[]
+        }
+      }
+
+    return manifest;
   }
 
   protected async fetch(url: string, headers?: Record<string, string>): Promise<FetchResult> {
@@ -150,12 +179,26 @@ export abstract class ContainerRegistry {
         if (manifest.platform.architecture === 'unknown') {
           continue
         }
+        if (manifest.platform.architecture !== 'amd64') {
+          continue
+        }
+        const digest = manifest.digest
+        const blobManifestV1 = await this.fetchBlob(digest, image.repository, token) as unknown as {
+          config: {
+            digest: string
+          }
+        };
+
+        const blob = await this.fetchBlob(blobManifestV1.config.digest,image.repository, token)
+
+        core.debug(`Generated imageInfo: ${JSON.stringify(blob, null, 2)}`)
+
         const imageInfo = {
-          architecture: manifest.platform.architecture,
+          architecture: blob.architecture,
           digest: manifest.digest,
-          os: manifest.platform?.os,
-          variant: manifest.platform?.variant ? manifest.platform.variant : manifest.platform.architecture === 'arm64' ? 'v8' : undefined,
-          layers: await this.getLayers(manifest.digest, image.repository, token),
+          os: blob.os,
+          variant: blob.variant ? manifest.platform.variant : blob.architecture === 'arm64' ? 'v8' : undefined,
+          layers: blob.rootfs.diff_ids
         }
         core.debug(`Generated imageInfo: ${JSON.stringify(imageInfo, null, 2)}`)
         imagesInfo.set(generateKey(imageInfo), imageInfo)
@@ -169,27 +212,15 @@ export abstract class ContainerRegistry {
     ) {
       core.debug(`Processing single manifest for image: ${image.repository}:${image.tag}`)
       const digest = fetchResult.data.config.digest
-      const blobUrl = `https://${this.baseUrl}${image.repository}/blobs/${digest}`
-      const blobHeaders = {
-        Accept: 'application/vnd.docker.container.image.v1+json,application/vnd.oci.image.config.v1+json',
-        Authorization: `Bearer ${token}`,
-      }
-      const blobFetchResult = await this.fetch(blobUrl, blobHeaders)
-
-      const {architecture, os, variant} = blobFetchResult.data as unknown as {
-        architecture: string
-        os: string
-        variant: string
-      }
-      const manifest = {architecture, os, variant}
-      core.debug(`Manifest for ${image.repository}:${image.tag}: ${JSON.stringify(manifest, null, 2)}`)
+      const blob = await this.fetchBlob(digest, image.repository, token);
+      core.debug(`Blob for ${image.repository}:${image.tag}: ${JSON.stringify(blob, null, 2)}`)
 
       const imageInfo = {
-        architecture: manifest.architecture,
+        architecture: blob.architecture,
         digest: dockerContentDigest,
-        os: manifest.os,
-        variant: manifest.variant ? manifest.variant : manifest.architecture === 'arm64' ? 'v8' : undefined,
-        layers: await this.getLayers(dockerContentDigest, image.repository, token),
+        os: blob.os,
+        variant: blob.variant ? blob.variant : blob.architecture === 'arm64' ? 'v8' : undefined,
+        layers: blob.rootfs.diff_ids
       }
       core.debug(`Found image for ${image.repository}:${image.tag}: ${JSON.stringify(imageInfo)}`)
 
@@ -198,4 +229,5 @@ export abstract class ContainerRegistry {
       throw new Error('Unsupported content type')
     }
   }
+
 }
