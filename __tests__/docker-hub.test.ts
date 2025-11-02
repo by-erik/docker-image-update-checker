@@ -5,8 +5,8 @@ describe('DockerHub', () => {
   const dockerHub = new DockerHub()
 
   test('getImageInfo', async () => {
-    const repository = 'library/nginx'
-    const tag = '1.23.4'
+    const repository = 'library/nextcloud'
+    const tag = '32.0'
     const nginxImageInfo = await dockerHub.getImageInfo({repository, tag})
 
     expect(nginxImageInfo).not.toBeNull()
@@ -59,10 +59,10 @@ describe('DockerHub', () => {
         variant: undefined,
       },
     ])
-  })
+  }, 10000)
 
   test('getToken', async () => {
-    const repository = 'library/nginx'
+    const repository = 'library/nextcloud:32.0'
     const token = await dockerHub.getToken(repository)
 
     expect(token).toMatch(/^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/)

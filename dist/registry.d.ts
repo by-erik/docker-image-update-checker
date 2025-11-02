@@ -27,6 +27,14 @@ interface Manifest {
         };
     }[];
 }
+interface Blob {
+    architecture: string;
+    os: string;
+    variant: string;
+    rootfs: {
+        diff_ids: string[];
+    };
+}
 interface FetchResult {
     headers: Record<string, string>;
     data: Manifest;
@@ -45,6 +53,7 @@ export declare abstract class ContainerRegistry {
     protected abstract getToken(repository: string): Promise<string>;
     protected abstract getCredentials(): DockerAuth | undefined;
     protected getLayers(digest: string, repo: string, token: string): Promise<string[]>;
+    protected fetchBlob(digest: string, repo: string, token: string): Promise<Blob>;
     protected fetch(url: string, headers?: Record<string, string>): Promise<FetchResult>;
     getImageInfo(image: Image): Promise<ImageMap>;
 }
