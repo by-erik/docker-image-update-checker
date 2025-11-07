@@ -93,7 +93,7 @@ export abstract class ContainerRegistry {
       return fetchResult.data
     } else {
       const contentType = fetchResult.headers['content-type']
-      throw new Error(`Unsupported content type: ${contentType}` )
+      throw new Error(`Unsupported content type: ${contentType}`)
     }
   }
 
