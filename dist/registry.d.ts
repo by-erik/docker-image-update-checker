@@ -1,4 +1,5 @@
 import { DockerAuth } from './auth.js';
+import { OciImageIndex, OciImageManifest } from './oci-image-spec.js';
 export interface Image {
     repository: string;
     tag: string;
@@ -42,9 +43,11 @@ export type ImageMap = Map<string, ImageInfo>;
 export declare abstract class ContainerRegistry {
     protected baseUrl: string;
     constructor(baseUrl: string);
+    private dockerContentDigest;
     protected abstract getToken(repository: string): Promise<string>;
     protected abstract getCredentials(): DockerAuth | undefined;
     protected getLayers(digest: string, repo: string, token: string): Promise<string[]>;
+    protected fetchManifest(image: Image, headers?: Record<string, string>): Promise<OciImageIndex | OciImageManifest>;
     protected fetch(url: string, headers?: Record<string, string>): Promise<FetchResult>;
     getImageInfo(image: Image): Promise<ImageMap>;
 }
