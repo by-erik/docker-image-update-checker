@@ -13,12 +13,12 @@ export interface OciImageIndex {
   }[]
 }
 
-export function isOciImageIndex(obj: any): obj is OciImageIndex {
+export function isOciImageIndex(obj: unknown): obj is OciImageIndex {
   return (
     typeof obj === 'object' &&
     obj !== null &&
-    (obj.mediaType === 'application/vnd.oci.image.index.v1+json' ||
-      obj.mediaType === 'application/vnd.docker.distribution.manifest.list.v2+json')
+    ((obj as OciImageIndex).mediaType === 'application/vnd.oci.image.index.v1+json' ||
+      (obj as OciImageIndex).mediaType === 'application/vnd.docker.distribution.manifest.list.v2+json')
   )
 }
 
@@ -37,11 +37,11 @@ export interface OciImageManifest {
   }[]
 }
 
-export function isOciImageManifest(obj: any): obj is OciImageManifest {
+export function isOciImageManifest(obj: unknown): obj is OciImageManifest {
   return (
     typeof obj === 'object' &&
     obj !== null &&
-    (obj.mediaType === 'application/vnd.oci.image.manifest.v1+json' ||
-      obj.mediaType === 'application/vnd.docker.distribution.manifest.v2+json')
+    ((obj as OciImageIndex).mediaType === 'application/vnd.oci.image.manifest.v1+json' ||
+      (obj as OciImageIndex).mediaType === 'application/vnd.docker.distribution.manifest.v2+json')
   )
 }
