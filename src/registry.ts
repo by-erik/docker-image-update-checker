@@ -32,7 +32,37 @@ interface Manifest {
   }[]
 }
 
-interface Blob {
+interface OciImageIndex {
+  schemaVersion: number
+  mediaType: string
+  manifests: {
+    mediaType: string
+    digest: string
+    size: number
+    platform: {
+      architecture: string
+      os: string
+      variant?: string
+    }
+  }[]
+}
+
+interface OciImageManifest {
+  schemaVersion: number
+  mediaType: string
+  config: {
+    mediaType: string
+    size: number
+    digest: string
+  }
+  layers: {
+    mediaType: string
+    size: number
+    digest: string
+  }[]
+}
+
+interface OciImageConfig {
   architecture: string
   os: string
   variant: string
@@ -73,6 +103,8 @@ function convertHeaders(headers: Record<string, unknown>): Record<string, string
 export abstract class ContainerRegistry {
   constructor(protected baseUrl: string) {}
 
+  private dockerContentDigest: string = ""
+
   protected abstract getToken(repository: string): Promise<string>
 
   protected abstract getCredentials(): DockerAuth | undefined
@@ -91,7 +123,59 @@ export abstract class ContainerRegistry {
     return layers.map((layer) => layer.digest)
   }
 
-  protected async fetchBlob(digest: string, repo: string, token: string): Promise<Blob> {
+  protected async fetchManifest(baseUrl: string, image: Image, headers?: Record<string, string>): Promise<OciImageIndex|OciImageManifest> {
+    const url = `https://${baseUrl}${image.repository}/manifests/${image.tag}`
+    const fetchResult = await this.fetch(url, headers)
+
+    core.debug(`Fetching manifest for image: ${image.repository}:${image.tag}`)
+    const contentType = fetchResult.headers['content-type']
+    this.dockerContentDigest = fetchResult.headers['docker-content-digest']
+    core.debug(`Content type: ${contentType}`)
+    core.debug(`Docker content digest: ${this.dockerContentDigest}`)
+
+    if (contentType === 'application/vnd.oci.image.index.v1+json') {
+      return fetchResult.data as unknown as OciImageIndex
+    } else if (contentType === 'application/vnd.oci.image.manifest.v1+json') {
+      return fetchResult.data as unknown as OciImageManifest
+    } else {
+      throw Error(`Unknown contentType: ${contentType}`)
+    }
+  }
+
+  protected isOciImageIndex(
+    data: OciImageIndex | OciImageManifest
+  ): data is OciImageIndex {
+    return data.mediaType === "application/vnd.oci.image.index.v1+json";
+  }
+
+  protected isOciImageManifest(
+    data: OciImageIndex | OciImageManifest | OciImageConfig
+  ): data is OciImageManifest {
+    const obj = data as OciImageManifest
+    return typeof obj.mediaType === "string" && obj.mediaType === "application/vnd.oci.image.manifest.v1+json";
+  }
+
+  protected isOciImageConfig(
+    data: OciImageManifest | OciImageConfig
+  ): data is OciImageConfig {
+    if (typeof data !== "object" || data === null) return false;
+
+    const obj = data as Partial<OciImageConfig>;
+
+    const hasArchitecture = typeof obj.architecture === "string";
+    const hasOs = typeof obj.os === "string";
+    const hasVariant = typeof obj.variant === "string";
+
+    const hasRootfs =
+      typeof obj.rootfs === "object" &&
+      obj.rootfs !== null &&
+      Array.isArray((obj.rootfs as any).diff_ids) &&
+      (obj.rootfs as any).diff_ids.every((id: any) => typeof id === "string");
+
+    return hasArchitecture && hasOs && hasVariant && hasRootfs;
+  }
+
+  protected async fetchBlobs(digest: string, repo: string, token: string): Promise<OciImageConfig|OciImageManifest> {
     const url = `https://${this.baseUrl}${repo}/blobs/${digest}`
     const headers = {
         Accept: 'application/vnd.docker.container.image.v1+json,application/vnd.oci.image.config.v1+json',
@@ -99,14 +183,7 @@ export abstract class ContainerRegistry {
       }
     const fetchResult = await this.fetch(url, headers)
 
-    const manifest = fetchResult.data as unknown as {
-        architecture: string
-        os: string
-        variant: string
-        rootfs: {
-          diff_ids: string[]
-        }
-      }
+    const manifest = fetchResult.data as unknown as OciImageConfig
 
     return manifest;
   }
@@ -141,36 +218,17 @@ export abstract class ContainerRegistry {
   async getImageInfo(image: Image): Promise<ImageMap> {
     core.debug(`Fetching token for repository: ${image.repository}`)
     const token = await this.getToken(image.repository)
-    const url = `https://${this.baseUrl}${image.repository}/manifests/${image.tag}`
     const headers = {
       Accept:
         'application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json',
       Authorization: `Bearer ${token}`,
     }
 
-    core.debug(`Fetching manifest for image: ${image.repository}:${image.tag}`)
-    const fetchResult = await this.fetch(url, headers)
-    const contentType = fetchResult.headers['content-type']
-    const dockerContentDigest = fetchResult.headers['docker-content-digest']
-
-    core.debug(`Content type: ${contentType}`)
-    core.debug(`Docker content digest: ${dockerContentDigest}`)
-
-    if (
-      contentType === 'application/vnd.docker.distribution.manifest.list.v2+json' ||
-      contentType === 'application/vnd.oci.image.index.v1+json'
-    ) {
+    const manifestResult = await this.fetchManifest(this.baseUrl, image, headers);
+    
+    if (this.isOciImageIndex(manifestResult)) {
       core.debug(`Processing manifest list for image: ${image.repository}:${image.tag}`)
-      const manifestList = fetchResult.data as unknown as {
-        manifests: {
-          digest: string
-          platform: {
-            architecture: string
-            os: string
-            variant: string
-          }
-        }[]
-      }
+      const manifestList = manifestResult
 
       const imagesInfo = new Map<string, ImageInfo>()
       core.debug(`Initial imagesInfo: ${JSON.stringify(Array.from(imagesInfo.values()), null, 2)}`)
@@ -183,51 +241,65 @@ export abstract class ContainerRegistry {
           continue
         }
         const digest = manifest.digest
-        const blobManifestV1 = await this.fetchBlob(digest, image.repository, token) as unknown as {
-          config: {
-            digest: string
-          }
-        };
-
-        const blob = await this.fetchBlob(blobManifestV1.config.digest,image.repository, token)
-
-        core.debug(`Generated imageInfo: ${JSON.stringify(blob, null, 2)}`)
-
-        const imageInfo = {
-          architecture: blob.architecture,
-          digest: manifest.digest,
-          os: blob.os,
-          variant: blob.variant ? manifest.platform.variant : blob.architecture === 'arm64' ? 'v8' : undefined,
-          layers: blob.rootfs.diff_ids
+        const imageManifest = await this.fetchBlobs(digest, image.repository, token)
+        if (!this.isOciImageManifest(imageManifest)) {
+          throw Error("Unexpected")
         }
+
+        const imageConfig = await this.fetchBlobs(imageManifest.config.digest, image.repository, token)
+        if (!this.isOciImageConfig(imageConfig)) {
+          throw Error("Unexpected config")
+        }
+
+        core.debug(`Generated imageInfo: ${JSON.stringify(imageConfig, null, 2)}`)
+
+        const imageInfo = this.toImageInfo(imageConfig);
         core.debug(`Generated imageInfo: ${JSON.stringify(imageInfo, null, 2)}`)
         imagesInfo.set(generateKey(imageInfo), imageInfo)
       }
       core.debug(`Found ${imagesInfo.size} images in manifest list for ${image.repository}:${image.tag}`)
       core.debug(`Images: ${JSON.stringify(Array.from(imagesInfo.values()), null, 2)}`)
       return imagesInfo
-    } else if (
-      contentType === 'application/vnd.docker.distribution.manifest.v2+json' ||
-      contentType === 'application/vnd.oci.image.manifest.v1+json'
-    ) {
-      core.debug(`Processing single manifest for image: ${image.repository}:${image.tag}`)
-      const digest = fetchResult.data.config.digest
-      const blob = await this.fetchBlob(digest, image.repository, token);
-      core.debug(`Blob for ${image.repository}:${image.tag}: ${JSON.stringify(blob, null, 2)}`)
 
-      const imageInfo = {
-        architecture: blob.architecture,
-        digest: dockerContentDigest,
-        os: blob.os,
-        variant: blob.variant ? blob.variant : blob.architecture === 'arm64' ? 'v8' : undefined,
-        layers: blob.rootfs.diff_ids
+    } else if (this.isOciImageManifest(manifestResult)) {
+      core.debug(`Processing single manifest for image: ${image.repository}:${image.tag}`)
+      const imageManifest = manifestResult
+
+      const imageConfig = await this.fetchBlobs(imageManifest.config.digest, image.repository, token);
+      if (!this.isOciImageConfig(imageConfig)) {
+        throw Error("Unexpected")
       }
+      core.debug(`Blob for ${image.repository}:${image.tag}: ${JSON.stringify(imageConfig, null, 2)}`)
+
+      const imageInfo = this.toImageInfo(imageConfig);
       core.debug(`Found image for ${image.repository}:${image.tag}: ${JSON.stringify(imageInfo)}`)
 
       return new Map([[generateKey(imageInfo), imageInfo]])
     } else {
       throw new Error('Unsupported content type')
     }
+  }
+
+  async handleImageManifest(imageManifest: OciImageManifest, image: Image, token: string): Promise<ImageInfo> {
+    const imageConfig = await this.fetchBlobs(imageManifest.config.digest, image.repository, token);
+    if (!this.isOciImageConfig(imageConfig)) {
+      throw Error("Unexpected")
+    }
+    const imageInfo = this.toImageInfo(imageConfig);
+    core.debug(`Found image for ${image.repository}:${image.tag}: ${JSON.stringify(imageInfo)}`)
+    return imageInfo;
+
+  }
+
+  toImageInfo(imageConfig: OciImageConfig): ImageInfo {
+    const imageInfo: ImageInfo = {
+        architecture: imageConfig.architecture,
+        digest: this.dockerContentDigest,
+        os: imageConfig.os,
+        variant: imageConfig.variant ? imageConfig.variant : imageConfig.architecture === 'arm64' ? 'v8' : undefined,
+        layers: imageConfig.rootfs.diff_ids
+    }
+    return imageInfo;
   }
 
 }
