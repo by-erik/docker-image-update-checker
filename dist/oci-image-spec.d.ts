@@ -12,7 +12,7 @@ export interface OciImageIndex {
         };
     }[];
 }
-export declare function isOciImageIndex(obj: any): obj is OciImageIndex;
+export declare function isOciImageIndex(obj: unknown): obj is OciImageIndex;
 export interface OciImageManifest {
     schemaVersion: number;
     mediaType: string;
@@ -27,5 +27,5 @@ export interface OciImageManifest {
         digest: string;
     }[];
 }
-export declare function isOciImageManifest(obj: any): obj is OciImageManifest;
+export declare function isOciImageManifest(obj: unknown): obj is OciImageManifest;
 //# sourceMappingURL=oci-image-spec.d.ts.map
