@@ -65,8 +65,8 @@ export function isOciImageConfig(obj: unknown): obj is OciImageConfig {
   const hasRootfs =
     typeof partialObj.rootfs === 'object' &&
     partialObj.rootfs !== null &&
-    Array.isArray((partialObj.rootfs as any).diff_ids) &&
-    (partialObj.rootfs as any).diff_ids.every((id: any) => typeof id === 'string')
+    Array.isArray((partialObj.rootfs as {diff_ids?: unknown}).diff_ids) &&
+    ((partialObj.rootfs as {diff_ids?: unknown}).diff_ids as unknown[]).every((id): id is string => typeof id === 'string')
 
   return hasArchitecture && hasOs && hasRootfs
 }
