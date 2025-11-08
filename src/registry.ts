@@ -1,41 +1,16 @@
 import axios, {AxiosError} from 'axios'
 import * as core from '@actions/core'
 import {DockerAuth} from './auth.js'
-import {isOciImageIndex, isOciImageManifest, OciImageIndex, OciImageManifest} from './oci-image-spec.js'
+import {isOciImageConfig, isOciImageIndex, isOciImageManifest, OciImageConfig, OciImageIndex, OciImageManifest} from './oci-image-spec.js'
 
 export interface Image {
   repository: string
   tag: string
 }
 
-interface Manifest {
-  schemaVersion: number
-  mediaType: string
-  config: {
-    mediaType: string
-    size: number
-    digest: string
-  }
-  layers?: {
-    mediaType: string
-    size: number
-    digest: string
-  }[]
-  mainfests?: {
-    mediaType: string
-    digest: string
-    size: number
-    platform: {
-      architecture: string
-      os: string
-      variant?: string
-    }
-  }[]
-}
-
 interface FetchResult {
   headers: Record<string, string>
-  data: Manifest
+  data: unknown
 }
 
 export interface ImageInfo {
@@ -71,18 +46,33 @@ export abstract class ContainerRegistry {
 
   protected abstract getCredentials(): DockerAuth | undefined
 
-  protected async getLayers(digest: string, repo: string, token: string): Promise<string[]> {
-    const url = `https://${this.baseUrl}${repo}/manifests/${digest}`
-    const headers = {
-      Accept: 'application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json',
-      Authorization: `Bearer ${token}`,
+  protected async fetchBlobs(image: Image, digest: string, headers?: Record<string, string>): Promise<OciImageManifest | OciImageConfig> {
+    const url = `https://${this.baseUrl}${image.repository}/blobs/${digest}`
+    const fetchResult = await this.fetch(url, {
+      ...headers,
+      Accept: 'application/vnd.docker.container.image.v1+json,application/vnd.oci.image.config.v1+json',
+    })
+    if (isOciImageManifest(fetchResult.data) || isOciImageConfig(fetchResult.data)) {
+      return fetchResult.data
+    } else {
+      const contentType = fetchResult.headers['content-type']
+      throw new Error(`Unsupported content type: ${contentType}`)
     }
+  }
 
-    const fetchResult = await this.fetch(url, headers)
-
-    const layers = fetchResult.data.layers as unknown as {digest: string}[]
-
-    return layers.map((layer) => layer.digest)
+  protected async fetchManifestByDigest(image: Image, digest: string, headers?: Record<string, string>): Promise<OciImageManifest> {
+    const url = `https://${this.baseUrl}${image.repository}/manifests/${digest}`
+    const fetchResult = await this.fetch(url, {
+      ...headers,
+      Accept: 'application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json',
+    })
+    this.dockerContentDigest = fetchResult.headers['docker-content-digest']
+    if (isOciImageManifest(fetchResult.data)) {
+      return fetchResult.data
+    } else {
+      const contentType = fetchResult.headers['content-type']
+      throw new Error(`Unsupported content type: ${contentType}`)
+    }
   }
 
   protected async fetchManifest(image: Image, headers?: Record<string, string>): Promise<OciImageIndex | OciImageManifest> {
@@ -99,7 +89,7 @@ export abstract class ContainerRegistry {
 
   protected async fetch(url: string, headers?: Record<string, string>): Promise<FetchResult> {
     try {
-      const response = await axios.get<Manifest>(url, {headers})
+      const response = await axios.get<unknown>(url, {headers})
       if (core.isDebug()) {
         core.startGroup('Fetch response')
         core.info(`Fetching ${url}`)
@@ -146,12 +136,15 @@ export abstract class ContainerRegistry {
         if (manifest.platform.architecture === 'unknown') {
           continue
         }
+
+        const imageManifest = await this.fetchManifestByDigest(image, manifest.digest, headers)
+
         const imageInfo = {
           architecture: manifest.platform.architecture,
           digest: manifest.digest,
           os: manifest.platform?.os,
           variant: manifest.platform?.variant ? manifest.platform.variant : manifest.platform.architecture === 'arm64' ? 'v8' : undefined,
-          layers: await this.getLayers(manifest.digest, image.repository, token),
+          layers: imageManifest.layers.map((layer) => layer.digest),
         }
         core.debug(`Generated imageInfo: ${JSON.stringify(imageInfo, null, 2)}`)
         imagesInfo.set(generateKey(imageInfo), imageInfo)
@@ -161,28 +154,21 @@ export abstract class ContainerRegistry {
       return imagesInfo
     } else if (isOciImageManifest(manifestResult)) {
       core.debug(`Processing single manifest for image: ${image.repository}:${image.tag}`)
-      const digest = manifestResult.config.digest
-      const blobUrl = `https://${this.baseUrl}${image.repository}/blobs/${digest}`
-      const blobHeaders = {
-        Accept: 'application/vnd.docker.container.image.v1+json,application/vnd.oci.image.config.v1+json',
-        Authorization: `Bearer ${token}`,
-      }
-      const blobFetchResult = await this.fetch(blobUrl, blobHeaders)
 
-      const {architecture, os, variant} = blobFetchResult.data as unknown as {
-        architecture: string
-        os: string
-        variant: string
+      const blogResult = await this.fetchBlobs(image, manifestResult.config.digest, headers)
+      if (!isOciImageConfig(blogResult)) {
+        throw Error('Not a OciImageConfig response')
       }
-      const manifest = {architecture, os, variant}
-      core.debug(`Manifest for ${image.repository}:${image.tag}: ${JSON.stringify(manifest, null, 2)}`)
+      const config = blogResult
+
+      core.debug(`Config for ${image.repository}:${image.tag}: ${JSON.stringify(config, null, 2)}`)
 
       const imageInfo = {
-        architecture: manifest.architecture,
+        architecture: config.architecture,
         digest: this.dockerContentDigest,
-        os: manifest.os,
-        variant: manifest.variant ? manifest.variant : manifest.architecture === 'arm64' ? 'v8' : undefined,
-        layers: await this.getLayers(this.dockerContentDigest, image.repository, token),
+        os: config.os,
+        variant: config.variant ? config.variant : config.architecture === 'arm64' ? 'v8' : undefined,
+        layers: manifestResult.layers.map((layer) => layer.digest),
       }
       core.debug(`Found image for ${image.repository}:${image.tag}: ${JSON.stringify(imageInfo)}`)
 

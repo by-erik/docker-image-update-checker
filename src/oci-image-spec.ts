@@ -45,3 +45,28 @@ export function isOciImageManifest(obj: unknown): obj is OciImageManifest {
       (obj as OciImageIndex).mediaType === 'application/vnd.docker.distribution.manifest.v2+json')
   )
 }
+
+export interface OciImageConfig {
+  architecture: string
+  variant?: string
+  os: string
+  rootfs: {
+    diff_ids: string[]
+  }
+}
+
+export function isOciImageConfig(obj: unknown): obj is OciImageConfig {
+  if (typeof obj !== 'object' || obj === null) return false
+
+  const partialObj = obj as Partial<OciImageConfig>
+
+  const hasArchitecture = typeof partialObj.architecture === 'string'
+  const hasOs = typeof partialObj.os === 'string'
+  const hasRootfs =
+    typeof partialObj.rootfs === 'object' &&
+    partialObj.rootfs !== null &&
+    Array.isArray((partialObj.rootfs as any).diff_ids) &&
+    (partialObj.rootfs as any).diff_ids.every((id: any) => typeof id === 'string')
+
+  return hasArchitecture && hasOs && hasRootfs
+}
