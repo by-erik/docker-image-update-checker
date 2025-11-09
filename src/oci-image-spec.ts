@@ -1,16 +1,18 @@
 export interface OciImageIndex {
   schemaVersion: number
   mediaType: string
-  manifests: {
-    mediaType: string
-    digest: string
-    size: number
-    platform: {
-      architecture: string
-      os: string
-      variant?: string
-    }
-  }[]
+  manifests: OciManifestDescriptor[]
+}
+
+export interface OciManifestDescriptor {
+  mediaType: string
+  digest: string
+  size: number
+  platform: {
+    architecture: string
+    os: string
+    variant?: string
+  }
 }
 
 export function isOciImageIndex(obj: unknown): obj is OciImageIndex {
