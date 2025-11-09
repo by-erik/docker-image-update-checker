@@ -1,35 +1,8 @@
 import { DockerAuth } from './auth.js';
+import { OciImageConfig, OciImageIndex, OciImageManifest, OciManifestDescriptor } from './oci-image-spec.js';
 export interface Image {
     repository: string;
     tag: string;
-}
-interface Manifest {
-    schemaVersion: number;
-    mediaType: string;
-    config: {
-        mediaType: string;
-        size: number;
-        digest: string;
-    };
-    layers?: {
-        mediaType: string;
-        size: number;
-        digest: string;
-    }[];
-    mainfests?: {
-        mediaType: string;
-        digest: string;
-        size: number;
-        platform: {
-            architecture: string;
-            os: string;
-            variant?: string;
-        };
-    }[];
-}
-interface FetchResult {
-    headers: Record<string, string>;
-    data: Manifest;
 }
 export interface ImageInfo {
     os: string;
@@ -42,11 +15,17 @@ export type ImageMap = Map<string, ImageInfo>;
 export declare abstract class ContainerRegistry {
     protected baseUrl: string;
     constructor(baseUrl: string);
+    private dockerContentDigest;
+    private headers;
     protected abstract getToken(repository: string): Promise<string>;
     protected abstract getCredentials(): DockerAuth | undefined;
-    protected getLayers(digest: string, repo: string, token: string): Promise<string[]>;
-    protected fetch(url: string, headers?: Record<string, string>): Promise<FetchResult>;
     getImageInfo(image: Image): Promise<ImageMap>;
+    private handleImageIndex;
+    private handleImageManifest;
+    protected toImageInfoFromManifestDescriptor(manifestDescriptor: OciManifestDescriptor): Omit<ImageInfo, 'layers'>;
+    protected fetchManifestByImage(image: Image): Promise<OciImageIndex | OciImageManifest>;
+    protected fetchManifestByDigest(image: Image, digest: string): Promise<OciImageManifest>;
+    protected fetchBlob(image: Image, digest: string): Promise<OciImageManifest | OciImageConfig>;
+    private fetch;
 }
-export {};
 //# sourceMappingURL=registry.d.ts.map
